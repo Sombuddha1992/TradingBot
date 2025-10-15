@@ -3370,3 +3370,24 @@ Session ID: 7c4822ed61082b4d1d2bc18100c1a7c2
 2025-10-14 20:31:59.294 [restartedMain] ERROR c.p.tradingBot.TradingBotApplication - === TEST LOG: Error test ===
 2025-10-14 20:57:56.097 [restartedMain] ERROR c.p.t.service.ChartinkScannerService - [31m[SCAN] Failed to run Positive scan: Expected condition failed: waiting for presence of element located by: By.cssSelector: table[class*='rounded-b'] (tried for 15 second(s) with 500 milliseconds interval)[0m
 2025-10-14 21:03:55.777 [restartedMain] ERROR c.p.t.service.ChartinkScannerService - [31m[SCAN] Failed to run Positive scan: Expected condition failed: waiting for presence of element located by: By.cssSelector: table[class*='rounded-b'] (tried for 15 second(s) with 500 milliseconds interval)[0m
+2025-10-15 10:26:50.458 [restartedMain] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
+2025-10-15 10:26:52.541 [restartedMain] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
+2025-10-15 10:26:54.614 [restartedMain] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
+2025-10-15 10:26:56.681 [restartedMain] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
+2025-10-15 10:26:58.755 [restartedMain] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
+2025-10-15 10:36:45.261 [restartedMain] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
+2025-10-15 10:36:47.337 [restartedMain] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
+2025-10-15 10:36:49.428 [restartedMain] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
+2025-10-15 10:36:51.506 [restartedMain] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
+2025-10-15 10:36:53.580 [restartedMain] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
+2025-10-15 10:36:55.652 [restartedMain] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
+2025-10-15 10:36:57.734 [restartedMain] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
+2025-10-15 10:51:50.730 [restartedMain] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
+2025-10-15 11:05:44.318 [restartedMain] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
+2025-10-15 11:06:57.692 [restartedMain] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
+2025-10-15 11:15:32.047 [restartedMain] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
+2025-10-15 11:16:35.883 [restartedMain] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
+2025-10-15 11:39:54.185 [restartedMain] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
+2025-10-15 11:39:58.254 [restartedMain] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
+2025-10-15 11:42:53.691 [restartedMain] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
+2025-10-15 11:45:34.291 [pool-2-thread-2] ERROR c.angelbroking.smartapi.SmartConnect - JSONObject["data"] is not a JSONArray (class org.json.JSONObject$Null : null).
