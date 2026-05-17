@@ -1,13 +1,10 @@
 package com.project.tradingBot;
 
-import java.time.Duration;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
@@ -15,20 +12,21 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 import com.project.tradingBot.service.ChartinkScannerService;
 import com.project.tradingBot.service.PopulateScanResultService;
+import com.project.tradingBot.service.SleepPreventionService;
 import com.project.tradingBot.service.SmartApiService;
 import com.project.tradingBot.service.StrategyEngine;
 
 @SpringBootApplication
 public class TradingBotApplication implements CommandLineRunner{
 
-	private static final Logger logger = LoggerFactory.getLogger(TradingBotApplication.class);
-	
 	@Autowired
 	private ChartinkScannerService scannerService;
 	@Autowired
-	SmartApiService smartApiService;
+	private SmartApiService smartApiService;
 	@Autowired
 	private StrategyEngine strategy;
+	@Autowired
+	private SleepPreventionService sleepPrevention;
 	
 	
 	public static void main(String[] args) {
@@ -39,22 +37,18 @@ public class TradingBotApplication implements CommandLineRunner{
 	@Override
 	public void run(String... args) throws Exception {
 		 
-        // Wait until 9:36 AM
-	    LocalTime targetTime = LocalTime.of(9, 36, 0);
-	    LocalTime now = LocalTime.now();
-
-	    long sleepSeconds = Duration.between(now, targetTime).getSeconds();
-	    if (sleepSeconds > 0) {
-	        logger.info("Waiting for 9:36 AM. Sleeping for " + sleepSeconds + " seconds.");
-	        Thread.sleep(sleepSeconds * 1000); // wait until target time
-	    } else {
-	    	logger.info("It's already past 9:36 AM. Executing immediately.");
-	    }
+	    System.out.println("Starting bot at " + LocalTime.now());
 	    
-	    logger.info("Starting bot at " + LocalTime.now());
+	    // Step 0: Prevent machine from sleeping
+	    sleepPrevention.preventSleep();
 	    
 	    // Step 1: Login to SmartAPI
-        smartApiService.login();
+	    try {
+	        smartApiService.login();
+	    } catch (Exception e) {
+	        System.out.println("SmartAPI login failed. Cannot proceed: " + e.getMessage());
+	        return;
+	    }
 		
 		 // Step 2: Run the scanner in chartink to get the stocks for the day
 	    scannerService.runScanner();
@@ -75,6 +69,7 @@ public class TradingBotApplication implements CommandLineRunner{
 		// Step 5: Do prerequisites for trading
 			strategy.init(pos, neg);
 		} catch (Exception e) {
+			System.out.println("Strategy initialization failed");
 			e.printStackTrace();
 		}
 		

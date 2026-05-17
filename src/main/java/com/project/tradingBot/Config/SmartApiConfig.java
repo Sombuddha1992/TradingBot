@@ -6,40 +6,20 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class SmartApiConfig {
 
-    // Trading App
-    @Value("${smartapi.trading.apiKey}")
-    private String tradingApiKey;
+    @Value("${smartapi.apiKey}")
+    private String apiKey;
 
-    @Value("${smartapi.trading.clientId}")
-    private String tradingClientId;
+    @Value("${smartapi.clientId}")
+    private String clientId;
 
-    @Value("${smartapi.trading.password}")
-    private String tradingPassword;
+    @Value("${smartapi.password}")
+    private String password;
 
-    @Value("${smartapi.trading.totpSecret}")
-    private String tradingTotpSecret;
+    @Value("${smartapi.totpSecret}")
+    private String totpSecret;
 
-    // Historical Data App
-    @Value("${smartapi.historical.apiKey}")
-    private String historicalApiKey;
-
-    @Value("${smartapi.historical.clientId}")
-    private String historicalClientId;
-
-    @Value("${smartapi.historical.password}")
-    private String historicalPassword;
-
-    @Value("${smartapi.historical.totpSecret}")
-    private String historicalTotpSecret;
-
-    // --- Getters ---
-    public String getTradingApiKey() { return tradingApiKey; }
-    public String getTradingClientId() { return tradingClientId; }
-    public String getTradingPassword() { return tradingPassword; }
-    public String getTradingTotpSecret() { return tradingTotpSecret; }
-
-    public String getHistoricalApiKey() { return historicalApiKey; }
-    public String getHistoricalClientId() { return historicalClientId; }
-    public String getHistoricalPassword() { return historicalPassword; }
-    public String getHistoricalTotpSecret() { return tradingTotpSecret; }
+    public String getApiKey() { return apiKey; }
+    public String getClientId() { return clientId; }
+    public String getPassword() { return password; }
+    public String getTotpSecret() { return totpSecret; }
 }

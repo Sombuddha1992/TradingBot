@@ -14,6 +14,8 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.List;
 
+import static com.project.tradingBot.util.ConsoleColors.*;
+
 @Service
 public class SmartApiService {
 
@@ -21,88 +23,81 @@ public class SmartApiService {
     private SmartApiConfig cfg;
     @Autowired
     private TotpUtilService totpUtilService;
-    
-    private SmartConnect smartConnect;
-    
-    // ---------------------- ANSI COLORS ----------------------
-    private static final String RESET = "\u001B[0m";
-    private static final String RED = "\u001B[31m";
-    private static final String GREEN = "\u001B[32m";
-    private static final String YELLOW = "\u001B[33m";
-    private static final String CYAN = "\u001B[36m";
-    
 
- // --- Login ---
+    private volatile SmartConnect smartConnect;
+
     public void login() {
         try {
-             // Close old connection if any
-             if (smartConnect != null) {
-            	 System.out.println(YELLOW + "[AUTH] Reauthenticating SmartAPI session..." + RESET);
-                 try {
-                     smartConnect = null;
-                     Thread.sleep(500); // small delay to ensure old connection is cleared
-                 } catch (Exception ignored) {}
-             }
-             
-            System.out.println("[LOGIN] Logging in to SmartAPI...");
+            if (smartConnect != null) {
+                System.out.println("Reauthenticating SmartAPI session...");
+                smartConnect = null;
+                Thread.sleep(500);
+            }
+
+            System.out.println("Logging in to SmartAPI...");
 
             smartConnect = new SmartConnect();
-            smartConnect.setApiKey(cfg.getTradingApiKey());
-            smartConnect.setSessionExpiryHook(() -> System.out.println("[SMARTAPI] Session expired"));
+            smartConnect.setApiKey(cfg.getApiKey());
+            smartConnect.setSessionExpiryHook(() -> System.out.println("SmartAPI session expired"));
 
-            String otp = totpUtilService.generateTotp(cfg.getTradingTotpSecret());
-            User user = smartConnect.generateSession(cfg.getTradingClientId(), cfg.getTradingPassword(), otp);
+            String otp = totpUtilService.generateTotp(cfg.getTotpSecret());
+            User user = smartConnect.generateSession(cfg.getClientId(), cfg.getPassword(), otp);
+
+            if (user == null || user.getAccessToken() == null) {
+                smartConnect = null;
+                throw new RuntimeException("SmartAPI login failed: user session is null. Verify credentials in application.properties.");
+            }
 
             smartConnect.setAccessToken(user.getAccessToken());
             smartConnect.setUserId(user.getUserId());
+            System.out.println(GREEN + "SmartAPI login successful. User ID: " + user.getUserId() + RESET);
 
-            System.out.println("[LOGIN] SmartAPI login successful. User ID: " + user.getUserId());
+        } catch (RuntimeException e) {
+            throw e;
         } catch (Exception e) {
-            e.printStackTrace();
+            smartConnect = null;
+            throw new RuntimeException("SmartAPI login failed", e);
         }
     }
-    
-    // --- Balance ---
+
     public double getBalance() {
         try {
-            //JSONObject rms = tradingConnect.getRMS();
-        	JSONObject rms = smartConnect.getRMS();
+            JSONObject rms = smartConnect.getRMS();
             return rms.optDouble("net", 0.0);
         } catch (Exception e) {
-            e.printStackTrace();
+            System.out.println("Failed to fetch balance: " + e.getMessage());
             return 0.0;
         }
     }
 
-    // --- Nifty Change % ---
     public double getNiftyChangePercent() {
         try {
-            // Symbol token for NIFTY 50 Index = 99926000 (AngelOne convention)
             JSONObject ltp = smartConnect.getLTP("NSE", "NIFTY 50", "99926000");
 
-            double close = ltp.optDouble("close", 0.0);       // yesterday's close
-            double lastPrice = ltp.optDouble("ltp", 0.0);     // current price
+            if (ltp == null) {
+                System.out.println(RED + "Failed to fetch NIFTY LTP — API returned null. Check if API key is valid." + RESET);
+                return 0.0;
+            }
+
+            double close = ltp.optDouble("close", 0.0);
+            double lastPrice = ltp.optDouble("ltp", 0.0);
 
             if (close == 0.0) return 0.0;
             return ((lastPrice - close) / close) * 100;
         } catch (Exception e) {
-            e.printStackTrace();
+            System.out.println(RED + "Error fetching NIFTY change: " + e.getMessage() + RESET);
             return 0.0;
         }
     }
 
- // --- Candles ---
     public synchronized List<Candle> getHistoricalCandles(String symbol, String interval, String fromDate, String toDate) {
         List<Candle> candles = new ArrayList<>();
 
         try {
-            // Append -EQ to match the keys in masterEquitiesMap
             String symbolWithEQ = symbol + "-EQ";
-
-            // Fetch token from the map
-            String token = PopulateScanResultService.masterEquitiesMap.get(symbolWithEQ);
+            String token = PopulateScanResultService.getMasterEquitiesMap().get(symbolWithEQ);
             if (token == null) {
-                System.out.println("[WARN] Token not found for symbol: " + symbolWithEQ);
+                System.out.println("Token not found for symbol: " + symbolWithEQ);
                 return candles;
             }
 
@@ -114,6 +109,10 @@ public class SmartApiService {
             payload.put("todate", toDate);
 
             JSONArray data = smartConnect.candleData(payload);
+            if (data == null) {
+                System.out.println("candleData returned null for " + symbol);
+                return candles;
+            }
 
             for (int i = 0; i < data.length(); i++) {
                 JSONArray arr = data.getJSONArray(i);
@@ -127,27 +126,86 @@ public class SmartApiService {
                 candles.add(c);
             }
 
-            // Add a small delay to avoid throttling
-            Thread.sleep(2000); // 2 second delay
+            Thread.sleep(2000); // throttle to avoid API rate limits
 
         } catch (Exception e) {
-            e.printStackTrace();
+            System.out.println("Error fetching candles for " + symbol + ": " + e.getMessage());
         }
 
         return candles;
     }
 
-
-    // --- Bracket Order ---
-    public boolean placeBracketOrder(String tradingSymbol, String transactionType,
-                                     int quantity, double price, double stopLoss, double target) {
+    public synchronized List<Candle> getDailyCandles(String symbol, String fromDate, String toDate) {
+        List<Candle> candles = new ArrayList<>();
         try {
-        	 // Append -EQ to match the keys in masterEquitiesMap
-            String symbolWithEQ = tradingSymbol + "-EQ";
+            String symbolWithEQ = symbol + "-EQ";
+            String token = PopulateScanResultService.getMasterEquitiesMap().get(symbolWithEQ);
+            if (token == null) {
+                System.out.println("Token not found for symbol: " + symbolWithEQ);
+                return candles;
+            }
 
-            // Fetch token from the map
-            String token = PopulateScanResultService.masterEquitiesMap.get(symbolWithEQ);
-            
+            JSONObject payload = new JSONObject();
+            payload.put("exchange", "NSE");
+            payload.put("symboltoken", token);
+            payload.put("interval", "ONE_DAY");
+            payload.put("fromdate", fromDate);
+            payload.put("todate", toDate);
+
+            JSONArray data = smartConnect.candleData(payload);
+            if (data == null) {
+                System.out.println("Daily candleData returned null for " + symbol);
+                return candles;
+            }
+
+            for (int i = 0; i < data.length(); i++) {
+                JSONArray arr = data.getJSONArray(i);
+                Candle c = new Candle();
+                c.setDatetime(arr.getString(0));
+                c.setOpen(arr.getDouble(1));
+                c.setHigh(arr.getDouble(2));
+                c.setLow(arr.getDouble(3));
+                c.setClose(arr.getDouble(4));
+                c.setVolume(arr.getDouble(5));
+                candles.add(c);
+            }
+            Thread.sleep(2000);
+        } catch (Exception e) {
+            System.out.println("Error fetching daily candles for " + symbol + ": " + e.getMessage());
+        }
+        return candles;
+    }
+
+    public double getLTP(String symbol) {
+        try {
+            String symbolWithEQ = symbol + "-EQ";
+            String token = PopulateScanResultService.getMasterEquitiesMap().get(symbolWithEQ);
+            if (token == null) return 0.0;
+
+            JSONObject ltp = smartConnect.getLTP("NSE", symbolWithEQ, token);
+            if (ltp == null) return 0.0;
+            return ltp.optDouble("ltp", 0.0);
+        } catch (Exception e) {
+            System.out.println("Error fetching LTP for " + symbol + ": " + e.getMessage());
+            return 0.0;
+        }
+    }
+
+    /**
+     * Places a bracket order on Angel One.
+     * @param stoplossOffset SL offset from entry price (not absolute)
+     * @param targetOffset   Target offset from entry price (not absolute)
+     */
+    public boolean placeBracketOrder(String tradingSymbol, String transactionType,
+                                     int quantity, double price, double stoplossOffset, double targetOffset) {
+        try {
+            String symbolWithEQ = tradingSymbol + "-EQ";
+            String token = PopulateScanResultService.getMasterEquitiesMap().get(symbolWithEQ);
+            if (token == null) {
+                System.out.println("Token not found for " + symbolWithEQ + " — cannot place order.");
+                return false;
+            }
+
             OrderParams params = new OrderParams();
             params.variety = "ROBO";
             params.quantity = quantity;
@@ -159,14 +217,21 @@ public class SmartApiService {
             params.producttype = "BO";
             params.duration = "DAY";
             params.price = price;
-            params.stoploss = String.valueOf(stopLoss);
-            params.squareoff = String.valueOf(target);
+            params.stoploss = String.valueOf(Math.round(stoplossOffset * 100.0) / 100.0);
+            params.squareoff = String.valueOf(Math.round(targetOffset * 100.0) / 100.0);
 
-            //Order order = tradingConnect.placeOrder(params, "ROBO");
+            System.out.println(GREEN + "[ORDER] Sending BO: " + transactionType + " " + tradingSymbol + " qty=" + quantity + " price=" + price + " sl_offset=" + params.stoploss + " tgt_offset=" + params.squareoff + RESET);
+
             Order order = smartConnect.placeOrder(params, "ROBO");
-            return order != null && order.orderId != null;
+            if (order != null && order.orderId != null) {
+                System.out.println(GREEN + "[ORDER] Placed successfully! Order ID: " + order.orderId + RESET);
+                return true;
+            } else {
+                System.out.println(RED + "[ORDER] Returned null or no order ID." + RESET);
+                return false;
+            }
         } catch (Exception e) {
-            e.printStackTrace();
+            System.out.println(RED + "[ORDER] Failed for " + tradingSymbol + ": " + e.getMessage() + RESET);
             return false;
         }
     }

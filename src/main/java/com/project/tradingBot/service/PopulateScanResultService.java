@@ -6,6 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.*;
 
+import java.util.concurrent.ConcurrentHashMap;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -14,18 +15,18 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 public class PopulateScanResultService {
 
     // --- File paths ---
-    private static final String MASTER_FILE = "scrip_master.csv";   // full file from AngelOne
-    private static final String EQUITIES_FILE = "equities.csv";     // filtered equities only
+    private static final String MASTER_FILE = "scrip_master.csv";
+    private static final String EQUITIES_FILE = "equities.csv";
     private static final String MASTER_URL =
             "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json";
 
     // --- Maps ---
-    public static Map<String, String> masterEquitiesMap = new HashMap<>();   // all NSE equities
+    private static final Map<String, String> masterEquitiesMap = new ConcurrentHashMap<>();
     
-    public static final Map<String, String> positiveStocksScannedMap = new HashMap<>(); //day's scanned positive stocks
-    public static final Map<String, String> negativeStocksScannedMap = new HashMap<>(); //day's scanned negative stocks
+    public static final Map<String, String> positiveStocksScannedMap = new ConcurrentHashMap<>();
+    public static final Map<String, String> negativeStocksScannedMap = new ConcurrentHashMap<>();
     
-    public static final Map<String, String> selectedStocksScannedMap = new HashMap<>(); // days scanned map based on nifty
+    public static final Map<String, String> selectedStocksScannedMap = new ConcurrentHashMap<>();
 
     /**
      * Step 1: Ensure equities.csv exists (download + filter if needed)
@@ -44,11 +45,11 @@ public class PopulateScanResultService {
 
     public static void printAllMasterEquities() {
         if (!masterEquitiesMap.isEmpty()) {
-            System.out.println("\n[MASTER] NSE Cash Equities (Symbol → Token):\n");
+            System.out.println("NSE Cash Equities (Symbol → Token):");
             masterEquitiesMap.forEach((symbol, token) ->
                     System.out.println("Symbol: " + symbol + ", Token: " + token));
         } else {
-            System.out.println("[MASTER] No equities data loaded.");
+            System.out.println("No equities data loaded.");
         }
     }
 
@@ -80,11 +81,11 @@ public class PopulateScanResultService {
 
     public static void printAllScannedStocks() {
         if (!selectedStocksScannedMap.isEmpty()) {
-            System.out.println("\n[SCANNED] Stock Name and Symbol Pairs:\n");
+            System.out.println("Scanned Stock Name and Symbol Pairs:");
             selectedStocksScannedMap.forEach((name, symbol) ->
-                    System.out.println("Stock Name: " + name + ", Symbol: " + symbol));
+                    System.out.println("Stock: " + name + ", Symbol: " + symbol));
         } else {
-            System.out.println("[SCANNED] No scanned stock data available.");
+            System.out.println("No scanned stock data available.");
         }
     }
 
@@ -93,21 +94,19 @@ public class PopulateScanResultService {
     private static void ensureEquitiesFileExists() throws IOException {
         File eqFile = new File(EQUITIES_FILE);
         if (eqFile.exists()) {
-            System.out.println("[INFO] Equities file already exists. Skipping creation.");
+            System.out.println("Equities file already exists. Skipping creation.");
             return;
         }
 
-        // Download master JSON file if missing
         File master = new File(MASTER_FILE);
         if (!master.exists()) {
-            System.out.println("[INFO] Downloading AngelOne Scrip Master JSON...");
+            System.out.println("Downloading AngelOne Scrip Master JSON...");
             try (InputStream in = new URL(MASTER_URL).openStream()) {
                 Files.copy(in, Paths.get(MASTER_FILE));
             }
-            System.out.println("[INFO] Master file downloaded: " + MASTER_FILE);
+            System.out.println("Master file downloaded: " + MASTER_FILE);
         }
 
-        // Filter NSE equities (symbol ends with -EQ) and write to EQUITIES_FILE
         ObjectMapper mapper = new ObjectMapper();
         JsonNode root = mapper.readTree(new File(MASTER_FILE));
 
@@ -115,9 +114,14 @@ public class PopulateScanResultService {
         int stockCount = 0;
 
         for (JsonNode node : root) {
-            String symbol = node.get("symbol").asText();
-            String token = node.get("token").asText();
-            String exchSeg = node.get("exch_seg").asText();
+            JsonNode symbolNode = node.get("symbol");
+            JsonNode tokenNode = node.get("token");
+            JsonNode exchNode = node.get("exch_seg");
+            if (symbolNode == null || tokenNode == null || exchNode == null) continue;
+
+            String symbol = symbolNode.asText();
+            String token = tokenNode.asText();
+            String exchSeg = exchNode.asText();
 
             if (symbol.endsWith("-EQ") && "NSE".equalsIgnoreCase(exchSeg)) {
                 ObjectNode obj = mapper.createObjectNode();
@@ -129,14 +133,14 @@ public class PopulateScanResultService {
         }
 
         mapper.writerWithDefaultPrettyPrinter().writeValue(new File(EQUITIES_FILE), filteredArray);
-        System.out.println("Total Stocks copied: " + stockCount);
-        System.out.println("[INFO] Equities file created: " + EQUITIES_FILE + " with " + filteredArray.size() + " entries.");
+        System.out.println("Total stocks copied: " + stockCount);
+        System.out.println("Equities file created: " + EQUITIES_FILE + " with " + filteredArray.size() + " entries.");
     }
     
     private static void loadMasterEquitiesMap() throws IOException {
         File eqFile = new File(EQUITIES_FILE);
         if (!eqFile.exists()) {
-            System.out.println("[ERROR] Equities file not found: " + EQUITIES_FILE);
+            System.out.println("Equities file not found: " + EQUITIES_FILE);
             return;
         }
 
@@ -146,13 +150,17 @@ public class PopulateScanResultService {
         masterEquitiesMap.clear();
 
         for (JsonNode node : root) {
-            String symbol = node.get("symbol").asText();
-            String token = node.get("token").asText();
+            JsonNode symbolNode = node.get("symbol");
+            JsonNode tokenNode = node.get("token");
+            if (symbolNode == null || tokenNode == null) continue;
+
+            String symbol = symbolNode.asText();
+            String token = tokenNode.asText();
 
             masterEquitiesMap.put(symbol, token);
         }
 
-        System.out.println("[INFO] Loaded " + masterEquitiesMap.size() + " equities into masterEquitiesMap.");
+        System.out.println("Loaded " + masterEquitiesMap.size() + " equities into masterEquitiesMap.");
     }
 
 }

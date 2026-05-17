@@ -46,6 +46,10 @@ public class Candle {
 	public void setVolume(double volume) {
 		this.volume = volume;
 	}
-    
-    
+
+	@Override
+	public String toString() {
+		return String.format("Candle{%s O:%.2f H:%.2f L:%.2f C:%.2f V:%.0f}",
+				datetime, open, high, low, close, volume);
+	}
 }

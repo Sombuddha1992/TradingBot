@@ -1,156 +1,121 @@
 package com.project.tradingBot.service;
 
+import com.project.tradingBot.models.ActiveTrade;
 import com.project.tradingBot.models.Candle;
+import com.project.tradingBot.models.StockContext;
+import com.project.tradingBot.service.SignalDetectionService.Signal;
+import com.project.tradingBot.service.SignalDetectionService.SignalResult;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import javax.annotation.PreDestroy;
+import jakarta.annotation.PreDestroy;
+import org.springframework.context.ConfigurableApplicationContext;
 import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import static com.project.tradingBot.util.ConsoleColors.*;
+
+/**
+ * Orchestrates the trading strategy lifecycle:
+ * init → start → poll → detect signals → execute trades → manage positions → shutdown.
+ */
 @Service
 public class StrategyEngine {
 
-    @Autowired
-    private SmartApiService smartApiService;
+    @Autowired private MarketDataService marketDataService;
+    @Autowired private SignalDetectionService signalDetectionService;
+    @Autowired private TradeExecutionService tradeExecutionService;
+    @Autowired private TradeManagementService tradeManagementService;
+    @Autowired private TradePersistenceService tradePersistenceService;
+    @Autowired private SmartApiService smartApiService;
+    @Autowired private ConfigurableApplicationContext applicationContext;
 
     private ScheduledExecutorService executor;
+    private ExecutorService stockExecutor;
     private List<String> stocksToMonitor = new ArrayList<>();
 
-    private final Map<String, Double> stock15MinHighs = new ConcurrentHashMap<>();
-    private final Map<String, Double> stock15MinLows = new ConcurrentHashMap<>();
-    private int tradesDone = 0;
-    private static final int MAX_TRADES = 20;
-
+    private final AtomicInteger tradesDone = new AtomicInteger(0);
     private boolean isPositiveDay;
+    private double niftyChangePercent;
     private volatile boolean initialized = false;
-    
-    // ---------------------- ANSI COLORS ----------------------
-    private static final String RESET = "\u001B[0m";
-    private static final String RED = "\u001B[31m";
-    private static final String GREEN = "\u001B[32m";
-    private static final String YELLOW = "\u001B[33m";
-    private static final String CYAN = "\u001B[36m";
 
- // ---------------------- INIT ----------------------
+    // ---- Strategy parameters (all in one place for easy tuning) ----
+    private static final double NIFTY_BIAS_THRESHOLD = 0.10;
+    private static final double SL_PERCENT = 0.70;
+    private static final double TARGET1_PERCENT = 1.05;   // 1:1.5 — locks profit
+    private static final double TARGET2_PERCENT = 2.10;   // 1:3   — hard exit
+    private static final double TRAIL_STEP_PERCENT = 0.20;
+    private static final double VOLUME_MULTIPLIER = 1.5;
+    private static final double ATR_MIN_PERCENT = 1.5;
+    private static final double ATR_MAX_PERCENT = 3.0;
+    private static final double BREAKOUT_RANGE_MAX = 0.5;
+    private static final LocalTime TRADE_CUTOFF_TIME = LocalTime.of(12, 0);
+    private static final int ATR_LOOKBACK_DAYS = 14;
+    private static final int MAX_TRADES = 2;
+    private static final int POLL_INTERVAL_SECONDS = 300;
+    private static final double CAPITAL_FRACTION = 0.5;
+    private static final double LEVERAGE = 5.0;
+    private static final double SIMULATED_BALANCE = 100000;
+    private static final double MIN_EFFECTIVE_CAPITAL = 1000;
+    private static final double RETEST_TOUCH_TOLERANCE = 0.002;
+    private static final double RETEST_FAIL_TOLERANCE = 0.005;
+
+
+    // ===================== INIT =====================
     public void init(List<String> positiveStocks, List<String> negativeStocks) {
         try {
-            double niftyChange = smartApiService.getNiftyChangePercent();
+            niftyChangePercent = marketDataService.fetchNiftyChange();
 
-            System.out.println(CYAN + "\n===================== [INIT] STRATEGY INITIALIZATION =====================" + RESET);
-            System.out.printf(YELLOW + "→ NIFTY %% Change: %.2f%%%n" + RESET, niftyChange);
+            System.out.println(CYAN + "===================== [INIT] STRATEGY INITIALIZATION =====================" + RESET);
+            System.out.println(String.format("%s→ NIFTY %% Change: %.2f%%%s", YELLOW, niftyChangePercent, RESET));
+            System.out.println(String.format("%s→ Bias Threshold: ±%.2f%%%s", YELLOW, NIFTY_BIAS_THRESHOLD, RESET));
 
-            // Determine bias
-            if (niftyChange > 0.04) {
-                stocksToMonitor = new CopyOnWriteArrayList<>(positiveStocks);
+            List<String> candidates;
+            if (niftyChangePercent > NIFTY_BIAS_THRESHOLD) {
+                candidates = positiveStocks;
                 isPositiveDay = true;
                 System.out.println(GREEN + "[INIT] Positive Market Bias → Monitoring Positive Stocks." + RESET);
-            } else if (niftyChange < -0.04) {
-                stocksToMonitor = new CopyOnWriteArrayList<>(negativeStocks);
+            } else if (niftyChangePercent < -NIFTY_BIAS_THRESHOLD) {
+                candidates = negativeStocks;
                 isPositiveDay = false;
                 System.out.println(RED + "[INIT] Negative Market Bias → Monitoring Negative Stocks." + RESET);
             } else {
-                System.out.println(YELLOW + "[INIT] NIFTY flat; not trading today." + RESET);
+                System.out.println(YELLOW + "[INIT] NIFTY within ±" + NIFTY_BIAS_THRESHOLD + "% — flat market, not trading today." + RESET);
                 return;
             }
 
-            String today = LocalDate.now().toString();
-            String from = today + " 09:15";
-            String to = today + " 09:30";
-
-            System.out.println(CYAN + "----------------------------------------------------------------------" + RESET);
-            System.out.println(YELLOW + String.format("[INIT] Fetching 15-min candles for %d candidate stocks...", stocksToMonitor.size()) + RESET);
-
-            for (String stock : new ArrayList<>(stocksToMonitor)) { // copy to avoid concurrent modification
-                boolean success = false;
-                int maxRetries = 3;
-                int delayMs = 2000;
-
-                for (int attempt = 1; attempt <= maxRetries && !success; attempt++) {
-                    try {
-                        if (attempt > 1) {
-                            System.out.println(YELLOW + String.format("[RETRY] Attempt %d for %s", attempt, stock) + RESET);
-                        }
-
-                        Thread.sleep(delayMs * attempt); // exponential backoff
-                        
-                        List<Candle> candles = smartApiService.getHistoricalCandles(stock, "FIFTEEN_MINUTE", from, to);
-
-                        if (candles.isEmpty()) {
-                            System.out.println(YELLOW + "[WARN] No 15-min candle data for " + stock + RESET);
-                            System.out.println(YELLOW + "[WARN] Some issue occurred while fetching candles (possible auth issue)." + RESET);
-                            Thread.sleep(30000); // wait 30 sec
-                            System.out.println(YELLOW + "[AUTH] Reauthenticating before retrying " + stock + RESET);
-                            smartApiService.login();
-                            continue; // retry same stock
-                        }
-
-                        Candle c = candles.get(0);
-                        double rangePercent = ((c.getHigh() - c.getLow()) / c.getLow()) * 100;
-
-                        stock15MinHighs.put(stock, c.getHigh());
-                        stock15MinLows.put(stock, c.getLow());
-                        System.out.println(String.format(
-                                GREEN + "[OK]   %-10s | High: %.2f | Low: %.2f | Range: %.2f%%" + RESET,
-                                stock, c.getHigh(), c.getLow(), rangePercent
-                        ));
-
-                        success = true; // successful fetch
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        System.err.println(RED + "[INIT] Interrupted while sleeping: " + ie.getMessage() + RESET);
-                        break;
-                    } catch (Exception e) {
-                        String errorMsg = e.getMessage() != null ? e.getMessage() : "";
-                        if (errorMsg.contains("AB1004") || errorMsg.toLowerCase().contains("unauthorized") 
-                                || errorMsg.contains("session") || errorMsg.contains("token")) {
-                            System.out.println(YELLOW + "[WARN] Some issue occurred related to authentication while fetching " + stock + RESET);
-                            System.out.println(YELLOW + "[AUTH] Waiting 60s before reauthenticating..." + RESET);
-                            try {
-                                Thread.sleep(30000);
-                                smartApiService.login();
-                                System.out.println(GREEN + "[AUTH] Reauthentication successful. Retrying..." + RESET);
-                            } catch (Exception re) {
-                                System.err.println(RED + "[AUTH] Reauthentication failed: " + re.getMessage() + RESET);
-                            }
-                        } else {
-                            System.err.println(RED + String.format("[INIT] Some issue occurred while fetching candle for %s. Retrying...", stock) + RESET);
-                        }
-                    }
-                }
-
-                if (!success) {
-                    System.err.println(RED + "[FAIL] All retries failed for " + stock + " → Removing from monitoring list." + RESET);
-                    stocksToMonitor.remove(stock);
-                }
-            }
-
-            System.out.println(CYAN + "----------------------------------------------------------------------" + RESET);
+            List<String> filtered = marketDataService.initializeStockData(candidates, ATR_MIN_PERCENT, ATR_MAX_PERCENT, ATR_LOOKBACK_DAYS);
+            stocksToMonitor = new CopyOnWriteArrayList<>(filtered);
 
             if (!stocksToMonitor.isEmpty()) {
                 System.out.println(GREEN + "[INIT] Final Stocks to Monitor (" + stocksToMonitor.size() + "):" + RESET);
-                for (String stock : stocksToMonitor)
-                    System.out.println(GREEN + "   → " + stock + RESET);
+                Map<String, StockContext> ctxMap = marketDataService.getStockContextMap();
+                for (String stock : stocksToMonitor) {
+                    StockContext ctx = ctxMap.get(stock);
+                    System.out.println(String.format("%s   → %s (ATR: %.2f%%)%s", GREEN, stock,
+                            ctx != null ? ctx.getAtrPercent() : 0.0, RESET));
+                }
             } else {
                 System.out.println(RED + "[INIT] No stocks left to monitor after filtering." + RESET);
             }
 
-            System.out.println(CYAN + "======================================================================\n" + RESET);
+            System.out.println(CYAN + "======================================================================" + RESET);
             initialized = true;
 
         } catch (Exception e) {
-            System.err.println(RED + "[INIT] Initialization failed: " + e.getMessage() + RESET);
+            System.out.println(RED + "[INIT] Initialization failed: " + e.getMessage() + RESET);
             e.printStackTrace();
         }
     }
 
 
-    // ---------------------- START ----------------------
+    // ===================== START =====================
     public void start() {
         if (!initialized) {
-            System.err.println(RED + "[START] Strategy not initialized. Call init() first." + RESET);
+            System.out.println(RED + "[START] Strategy not initialized. Call init() first." + RESET);
             return;
         }
 
@@ -163,38 +128,67 @@ public class StrategyEngine {
 
         long initialDelay = computeInitialDelaySeconds();
         System.out.println(CYAN + "[START] Strategy will start polling after " + initialDelay + " seconds." + RESET);
+        System.out.println(CYAN + "[START] Trade cutoff time: " + TRADE_CUTOFF_TIME + RESET);
+        System.out.println(String.format("%s[START] SL: %.2f%% | T1: %.2f%% (lock profit) | T2: %.2f%% (hard exit) | Trail step: %.2f%%%s",
+                CYAN, SL_PERCENT, TARGET1_PERCENT, TARGET2_PERCENT, TRAIL_STEP_PERCENT, RESET));
+
+        boolean paperTrade = tradeExecutionService.isPaperTrade();
+        System.out.println(paperTrade
+                ? YELLOW + "[START] *** PAPER TRADE MODE — no real orders will be placed ***" + RESET
+                : RED + "[START] *** LIVE TRADE MODE — real orders WILL be placed ***" + RESET);
 
         executor.scheduleAtFixedRate(() -> {
             try {
                 pollStocks();
+                tradeManagementService.manageTrailingSL(TARGET1_PERCENT, TRAIL_STEP_PERCENT);
             } catch (Exception e) {
-                System.err.println(RED + "[SCHEDULE] Uncaught exception in scheduled task: " + e.getMessage() + RESET);
+                System.out.println(RED + "[SCHEDULE] Uncaught exception in scheduled task: " + e.getMessage() + RESET);
                 e.printStackTrace();
             }
-        }, initialDelay, 300, TimeUnit.SECONDS);
+        }, initialDelay, POLL_INTERVAL_SECONDS, TimeUnit.SECONDS);
 
         keepAliveThread();
     }
 
 
-    // ---------------------- POLL ----------------------
+    // ===================== POLL =====================
     private void pollStocks() {
-        System.out.println(CYAN + "\n[POLL] --------------------------------------------------------------" + RESET);
-        System.out.println(YELLOW + "[POLL] Polling started. Trades done: " + tradesDone + RESET);
+        System.out.println(CYAN + "[POLL] --------------------------------------------------------------" + RESET);
+        System.out.println(YELLOW + "[POLL] Polling started at " + LocalTime.now() + " | Trades done: " + tradesDone.get() + RESET);
 
-        if (tradesDone >= MAX_TRADES) {
+        List<String> activeStocks = tradeManagementService.getActiveTradeStocks();
+
+        if (tradesDone.get() >= MAX_TRADES) {
             System.out.println(RED + "[POLL] Max trades reached. Stopping strategy." + RESET);
             cleanupAndExit();
             return;
         }
 
-        if (stocksToMonitor == null || stocksToMonitor.isEmpty()) {
-            System.out.println(RED + "[POLL] No stocks left to monitor. Exiting." + RESET);
+        if (LocalTime.now().isAfter(TRADE_CUTOFF_TIME) && activeStocks.isEmpty()) {
+            System.out.println(YELLOW + "[POLL] Past " + TRADE_CUTOFF_TIME + " with no active trades. Stopping." + RESET);
             cleanupAndExit();
             return;
         }
 
-        ExecutorService stockExecutor = Executors.newFixedThreadPool(Math.max(5, stocksToMonitor.size()));
+        if (stocksToMonitor == null || stocksToMonitor.isEmpty()) {
+            if (activeStocks.isEmpty()) {
+                System.out.println(RED + "[POLL] No stocks to monitor and no active trades. Exiting." + RESET);
+                cleanupAndExit();
+                return;
+            }
+            System.out.println(YELLOW + "[POLL] No new stocks to scan, but active trades remain. Monitoring..." + RESET);
+            return;
+        }
+
+        if (LocalTime.now().isAfter(TRADE_CUTOFF_TIME)) {
+            System.out.println(YELLOW + "[POLL] Past " + TRADE_CUTOFF_TIME + " — only managing existing trades, no new entries." + RESET);
+            return;
+        }
+
+        if (stockExecutor == null || stockExecutor.isShutdown()) {
+            stockExecutor = Executors.newFixedThreadPool(Math.min(10, Math.max(5, stocksToMonitor.size())));
+        }
+
         List<Future<?>> futures = new ArrayList<>();
 
         for (String stock : new ArrayList<>(stocksToMonitor)) {
@@ -202,45 +196,36 @@ public class StrategyEngine {
         }
 
         for (Future<?> f : futures) {
-            try {
-                f.get();
-            } catch (Exception e) {
-                System.err.println(RED + "[POLL] Exception while processing stock: " + e.getMessage() + RESET);
+            try { f.get(); } catch (Exception e) {
+                System.out.println(RED + "[POLL] Exception while processing stock: " + e.getMessage() + RESET);
             }
         }
-
-        stockExecutor.shutdown();
         System.out.println(CYAN + "[POLL] Cycle completed for all stocks." + RESET);
     }
 
 
-    // ---------------------- PROCESS EACH STOCK ----------------------
+    // ===================== PROCESS STOCK =====================
     private void processStock(String stock) {
         try {
             System.out.println(YELLOW + "[POLL] Checking " + stock + RESET);
             String[] window = getAligned5MinWindow();
-            String from = window[0];
-            String to = window[1];
 
             List<Candle> candles;
             try {
-                // --- Fetch Latest Candle ---
-                candles = smartApiService.getHistoricalCandles(stock, "FIVE_MINUTE", from, to);
+                candles = smartApiService.getHistoricalCandles(stock, "FIVE_MINUTE", window[0], window[1]);
             } catch (Exception ex) {
                 String msg = ex.getMessage() != null ? ex.getMessage() : "";
-                System.err.println(RED + "[ERROR] Failed to fetch candles for " + stock + ": " + msg + RESET);
-
-                // --- Handle token expiry / session invalidation ---
-                if (msg.contains("session") || msg.contains("token") || msg.contains("unauthorized") || msg.contains("AB1004") ) {
+                System.out.println(RED + "[ERROR] Failed to fetch candles for " + stock + ": " + msg + RESET);
+                if (msg.contains("session") || msg.contains("token") || msg.contains("unauthorized") || msg.contains("AB1004")) {
                     System.out.println(YELLOW + "[AUTH] Session expired → Attempting reauthentication..." + RESET);
-                    smartApiService.login(); // re-login or regenerate token
+                    smartApiService.login();
                     Thread.sleep(2000);
-                    System.out.println(GREEN + "[AUTH] Reauthentication successful. Retrying candle fetch..." + RESET);
-                    candles = smartApiService.getHistoricalCandles(stock, "FIVE_MINUTE", from, to);
+                    candles = smartApiService.getHistoricalCandles(stock, "FIVE_MINUTE", window[0], window[1]);
                 } else {
                     throw ex;
                 }
             }
+
             if (candles.isEmpty()) {
                 System.out.println(YELLOW + "[POLL] No candle data for " + stock + RESET);
                 return;
@@ -248,105 +233,79 @@ public class StrategyEngine {
 
             Candle c = candles.get(0);
             double rangePercent = ((c.getHigh() - c.getLow()) / c.getLow()) * 100;
+            System.out.println(String.format("%s[POLL] %-10s | O:%.2f H:%.2f L:%.2f C:%.2f | Vol:%.0f | Range: %.2f%%%s",
+                    CYAN, stock, c.getOpen(), c.getHigh(), c.getLow(), c.getClose(), c.getVolume(), rangePercent, RESET));
 
-            System.out.printf(CYAN + "[POLL] %-10s | O:%.2f H:%.2f L:%.2f C:%.2f | Range: %.2f%%%n" + RESET,
-                    stock, c.getOpen(), c.getHigh(), c.getLow(), c.getClose(), rangePercent);
+            StockContext ctx = marketDataService.getStockContextMap().get(stock);
+            if (ctx == null) {
+                System.out.println(YELLOW + "[POLL] No context found for " + stock + " — skipping." + RESET);
+                return;
+            }
 
+            // Check pending retest first
+            if (signalDetectionService.hasPendingRetest(stock)) {
+                SignalResult result = signalDetectionService.evaluateRetest(stock, c, RETEST_TOUCH_TOLERANCE, RETEST_FAIL_TOLERANCE);
+                handleSignalResult(stock, c, result);
+                return;
+            }
+
+            // Evaluate for new breakout
             if (isPositiveDay) {
                 System.out.println(GREEN + "[POLL] Positive Day → Looking for Bullish Breakouts." + RESET);
-                if (c.getClose() > stock15MinHighs.get(stock) && rangePercent <= 0.5) {
-                    synchronized (this) {
-                        if (tradesDone < MAX_TRADES) {
-                        	 System.out.println(RED + "[TRADE] EXECUTE TRADE FOR " + stock +
-                                     " | Reason: Close " + c.getClose() + " > 15-min High " + stock15MinHighs.get(stock) +
-                                     " and Range " + String.format("%.2f", rangePercent) + "% <= 0.5%" + RESET);
-                             
-                            executeTrade(stock, c);
-                            stocksToMonitor.remove(stock);
-                            tradesDone++; //temporary. remove after execution logic is done
-                            System.out.println(YELLOW + "[EXIT] " + stock + " Trade executed → Removed from watchlist." + RESET);
-                            System.out.println(GREEN + "[TRADE] TRADES DONE FOR THE DAY IS " + tradesDone + RESET);
-                        }
-                    }
-                } else if (c.getLow() < stock15MinLows.get(stock)) {
-                    stocksToMonitor.remove(stock);
-                    System.out.println(YELLOW + "[EXIT] " + stock + " broke low → Removed from watchlist." + RESET);
-                }
-
             } else {
                 System.out.println(RED + "[POLL] Negative Day → Looking for Bearish Breakdowns." + RESET);
-                if (c.getClose() < stock15MinLows.get(stock) && rangePercent <= 0.5) {
-                    synchronized (this) {
-                        if (tradesDone < MAX_TRADES) {
-                        	System.out.println(RED + "[TRADE] EXECUTE TRADE FOR " + stock + 
-                                    " | Reason: Close " + c.getClose() + " < 15-min Low " + stock15MinLows.get(stock) + 
-                                    " and Range " + String.format("%.2f", rangePercent) + "% <= 0.5%" + RESET);
-                            
-                            executeTrade(stock, c);
+            }
+
+            SignalResult result = signalDetectionService.evaluateBreakout(stock, c, ctx, isPositiveDay, VOLUME_MULTIPLIER, BREAKOUT_RANGE_MAX);
+            handleSignalResult(stock, c, result);
+
+        } catch (Exception e) {
+            System.out.println(RED + "[ERROR] Exception processing " + stock + ": " + e.getMessage() + RESET);
+        }
+    }
+
+    private void handleSignalResult(String stock, Candle c, SignalResult result) {
+        switch (result.getSignal()) {
+            case RETEST_CONFIRMED:
+                synchronized (this) {
+                    if (tradesDone.get() < MAX_TRADES) {
+                        ActiveTrade trade = tradeExecutionService.executeOrder(
+                                stock, c, result.getDirection(),
+                                SL_PERCENT, TARGET1_PERCENT, TARGET2_PERCENT,
+                                CAPITAL_FRACTION, LEVERAGE, SIMULATED_BALANCE, MIN_EFFECTIVE_CAPITAL);
+                        if (trade != null) {
+                            int count = tradesDone.incrementAndGet();
+                            StockContext ctx = marketDataService.getStockContextMap().get(stock);
+                            tradePersistenceService.saveTradeEntry(trade,
+                                    ctx != null ? ctx.getAtrPercent() : 0.0,
+                                    ctx != null ? ctx.getAvgVolume() : 0.0,
+                                    c.getVolume(), isPositiveDay, niftyChangePercent,
+                                    tradeExecutionService.isPaperTrade());
+                            tradeManagementService.registerTrade(trade);
+
+                            System.out.println(GREEN + "[ENTRY] Trade #" + count + " placed successfully." + RESET);
+                            if (count >= MAX_TRADES) {
+                                System.out.println(RED + "[ENTRY] Max trades (" + MAX_TRADES + ") reached. No more new trades." + RESET);
+                            }
                             stocksToMonitor.remove(stock);
-                            tradesDone++; //temporary. remove after execution logic is done
-                            System.out.println(YELLOW + "[EXIT] " + stock + " Trade executed → Removed from watchlist." + RESET);
-                            System.out.println(GREEN + "[TRADE] TRADES DONE FOR THE DAY IS " + tradesDone + RESET);
                         }
                     }
-                } else if (c.getHigh() > stock15MinHighs.get(stock)) {
-                    stocksToMonitor.remove(stock);
-                    System.out.println(YELLOW + "[EXIT] " + stock + " reversed → Removed from watchlist." + RESET);
                 }
-            }
-
-        } catch (Exception e) {
-            System.err.println(RED + "[ERROR] Exception processing " + stock + ": " + e.getMessage() + RESET);
+                break;
+            case INVALIDATED:
+            case RETEST_FAILED:
+                stocksToMonitor.remove(stock);
+                break;
+            case BREAKOUT_PENDING:
+            case WAITING_RETEST:
+            case NONE:
+            default:
+                break;
         }
     }
 
 
-    // ---------------------- TRADE EXECUTION ----------------------
-    private void executeTrade(String stock, Candle c) {
-        try {
-            System.out.println(GREEN + "[ENTRY] Entry condition met for " + stock + RESET);
-
-            double balance = smartApiService.getBalance();
-            if (balance <= 0) {
-                System.err.println(YELLOW + "[ENTRY] Balance unavailable or zero — skipping trade." + RESET);
-                return;
-            }
-
-            double capital = balance * 0.5;
-            double leverage = 5.0;
-            double effectiveCapital = capital * leverage;
-            double marketPrice = c.getHigh();
-
-            int qty = (int) (effectiveCapital / marketPrice);
-            if (qty <= 0 || effectiveCapital < 1000) {
-                System.err.println(RED + String.format("[ENTRY] Skipping %s | Invalid Qty=%d | Cap=%.2f", stock, qty, effectiveCapital) + RESET);
-                return;
-            }
-
-            double sl = marketPrice * 0.995;
-            double tgt = marketPrice * 1.0075;
-
-            System.out.printf(GREEN + "[ENTRY] Placing order: %s | Qty=%d | Price=%.2f | SL=%.2f | TGT=%.2f | Leverage=%.1fx%n" + RESET,
-                    stock, qty, marketPrice, sl, tgt, leverage);
-
-            //boolean placed = smartApiService.placeBracketOrder(stock, "BUY", qty, marketPrice, sl, tgt);
-
-            boolean placed = true;
-            
-            if (placed) {
-                tradesDone++;
-                System.out.println(GREEN + "[ENTRY] Trade placed successfully. Total trades: " + tradesDone + RESET);
-            } else {
-                System.err.println(RED + "[ENTRY] Order failed for " + stock + RESET);
-            }
-
-        } catch (Exception e) {
-            System.err.println(RED + "[ENTRY] Trade execution error for " + stock + ": " + e.getMessage() + RESET);
-        }
-    }
-
-
-    // ---------------------- UTILITIES ----------------------
+    // ===================== UTILITIES =====================
     private String[] getAligned5MinWindow() {
         LocalDateTime now = LocalDateTime.now();
         int flooredMinute = (now.getMinute() / 5) * 5;
@@ -374,13 +333,14 @@ public class StrategyEngine {
             try {
                 while (true) {
                     Thread.sleep(60000);
-                    System.out.println(CYAN + "[KEEP-ALIVE] Strategy running..." + RESET);
+                    System.out.println(CYAN + "[KEEP-ALIVE] Strategy running... Active trades: " +
+                            tradeManagementService.getActiveTradeStocks().size() + RESET);
                 }
             } catch (InterruptedException e) {
                 System.out.println(RED + "[KEEP-ALIVE] Thread interrupted. Exiting..." + RESET);
             }
         });
-        t.setDaemon(false);
+        t.setDaemon(true);
         t.setName("StrategyEngine-KeepAlive");
         t.start();
     }
@@ -396,11 +356,15 @@ public class StrategyEngine {
         System.out.println(RED + "[EXIT] Performing cleanup before exit..." + RESET);
         cleanup();
         System.out.println(RED + "[EXIT] Application exiting." + RESET);
-        System.exit(1);
+        applicationContext.close();
     }
 
     @PreDestroy
     public void cleanup() {
         shutdownExecutor();
+        if (stockExecutor != null && !stockExecutor.isShutdown()) {
+            stockExecutor.shutdown();
+        }
     }
 }
+
