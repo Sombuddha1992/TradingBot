@@ -90,6 +90,24 @@ public class SmartApiService {
         }
     }
 
+    /**
+     * Fetches the current India VIX value.
+     * @return India VIX value, or -1 if fetch fails
+     */
+    public double getIndiaVix() {
+        try {
+            JSONObject ltp = smartConnect.getLTP("NSE", "India VIX", "99926004");
+            if (ltp == null) {
+                System.out.println(RED + "Failed to fetch India VIX — API returned null." + RESET);
+                return -1;
+            }
+            return ltp.optDouble("ltp", -1);
+        } catch (Exception e) {
+            System.out.println(RED + "Error fetching India VIX: " + e.getMessage() + RESET);
+            return -1;
+        }
+    }
+
     public synchronized List<Candle> getHistoricalCandles(String symbol, String interval, String fromDate, String toDate) {
         List<Candle> candles = new ArrayList<>();
 

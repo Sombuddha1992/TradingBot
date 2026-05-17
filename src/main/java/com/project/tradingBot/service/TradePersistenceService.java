@@ -26,6 +26,15 @@ public class TradePersistenceService {
     public void saveTradeEntry(ActiveTrade activeTrade, double atrPercent, double avgVolume,
                                double breakoutVolume, boolean isPositiveDay, double niftyChangePercent,
                                boolean paperTrade) {
+        saveTradeEntry(activeTrade, atrPercent, avgVolume, breakoutVolume, isPositiveDay, niftyChangePercent, paperTrade, "ORB");
+    }
+
+    /**
+     * Saves a new trade entry to the database and links the entity to the ActiveTrade.
+     */
+    public void saveTradeEntry(ActiveTrade activeTrade, double atrPercent, double avgVolume,
+                               double breakoutVolume, boolean isPositiveDay, double niftyChangePercent,
+                               boolean paperTrade, String strategyName) {
         try {
             Trade trade = new Trade();
             trade.setTradeDate(LocalDate.now());
@@ -44,6 +53,7 @@ public class TradePersistenceService {
             trade.setBreakoutVolume(breakoutVolume);
             trade.setNiftyBias(isPositiveDay ? "POSITIVE" : "NEGATIVE");
             trade.setNiftyChangePercent(niftyChangePercent);
+            trade.setStrategy(strategyName);
             trade.setEntryTime(LocalDateTime.now());
 
             trade = tradeRepository.save(trade);

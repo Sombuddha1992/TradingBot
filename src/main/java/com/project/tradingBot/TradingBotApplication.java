@@ -14,7 +14,8 @@ import com.project.tradingBot.service.ChartinkScannerService;
 import com.project.tradingBot.service.PopulateScanResultService;
 import com.project.tradingBot.service.SleepPreventionService;
 import com.project.tradingBot.service.SmartApiService;
-import com.project.tradingBot.service.StrategyEngine;
+import com.project.tradingBot.service.OrbStrategyEngine;
+import com.project.tradingBot.service.VwapStrategyEngine;
 
 @SpringBootApplication
 public class TradingBotApplication implements CommandLineRunner{
@@ -24,7 +25,9 @@ public class TradingBotApplication implements CommandLineRunner{
 	@Autowired
 	private SmartApiService smartApiService;
 	@Autowired
-	private StrategyEngine strategy;
+	private OrbStrategyEngine strategy;
+	@Autowired
+	private VwapStrategyEngine vwapStrategy;
 	@Autowired
 	private SleepPreventionService sleepPrevention;
 	
@@ -73,8 +76,19 @@ public class TradingBotApplication implements CommandLineRunner{
 			e.printStackTrace();
 		}
 		
-		// Step 6: Actual Trading Starts
+		// Step 6: Actual Trading Starts (ORB: 9:30-12:00)
 		strategy.start();
+		
+		// Step 7: Initialize VWAP strategy (runs 12:00-15:00, time-gated by its own delay)
+		try {
+			vwapStrategy.init();
+		} catch (Exception e) {
+			System.out.println("VWAP strategy initialization failed");
+			e.printStackTrace();
+		}
+		
+		// Step 8: Start VWAP strategy (will auto-delay until 12:00 PM)
+		vwapStrategy.start();
 	}
 	
 }

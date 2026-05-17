@@ -9,7 +9,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PreDestroy;
-import org.springframework.context.ConfigurableApplicationContext;
 import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -23,7 +22,7 @@ import static com.project.tradingBot.util.ConsoleColors.*;
  * init → start → poll → detect signals → execute trades → manage positions → shutdown.
  */
 @Service
-public class StrategyEngine {
+public class OrbStrategyEngine {
 
     @Autowired private MarketDataService marketDataService;
     @Autowired private SignalDetectionService signalDetectionService;
@@ -31,8 +30,6 @@ public class StrategyEngine {
     @Autowired private TradeManagementService tradeManagementService;
     @Autowired private TradePersistenceService tradePersistenceService;
     @Autowired private SmartApiService smartApiService;
-    @Autowired private ConfigurableApplicationContext applicationContext;
-
     private ScheduledExecutorService executor;
     private ExecutorService stockExecutor;
     private List<String> stocksToMonitor = new ArrayList<>();
@@ -41,6 +38,8 @@ public class StrategyEngine {
     private boolean isPositiveDay;
     private double niftyChangePercent;
     private volatile boolean initialized = false;
+    private volatile boolean stopped = false;
+    private Runnable onShutdownCallback;
 
     // ---- Strategy parameters (all in one place for easy tuning) ----
     private static final double NIFTY_BIAS_THRESHOLD = 0.10;
@@ -55,7 +54,8 @@ public class StrategyEngine {
     private static final LocalTime TRADE_CUTOFF_TIME = LocalTime.of(12, 0);
     private static final int ATR_LOOKBACK_DAYS = 14;
     private static final int MAX_TRADES = 2;
-    private static final int POLL_INTERVAL_SECONDS = 300;
+    private static final int POLL_INTERVAL_LIVE = 300;
+    private static final int POLL_INTERVAL_PAPER = 60;
     private static final double CAPITAL_FRACTION = 0.5;
     private static final double LEVERAGE = 5.0;
     private static final double SIMULATED_BALANCE = 100000;
@@ -121,7 +121,7 @@ public class StrategyEngine {
 
         executor = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r);
-            t.setName("StrategyEngine-Poller");
+            t.setName("OrbStrategyEngine-Poller");
             t.setDaemon(false);
             return t;
         });
@@ -134,20 +134,37 @@ public class StrategyEngine {
 
         boolean paperTrade = tradeExecutionService.isPaperTrade();
         System.out.println(paperTrade
-                ? YELLOW + "[START] *** PAPER TRADE MODE — no real orders will be placed ***" + RESET
+                ? YELLOW + "[START] *** PAPER TRADE MODE — 60s polling when trades active, 300s for scanning ***" + RESET
                 : RED + "[START] *** LIVE TRADE MODE — real orders WILL be placed ***" + RESET);
 
-        executor.scheduleAtFixedRate(() -> {
-            try {
-                pollStocks();
-                tradeManagementService.manageTrailingSL(TARGET1_PERCENT, TRAIL_STEP_PERCENT);
-            } catch (Exception e) {
-                System.out.println(RED + "[SCHEDULE] Uncaught exception in scheduled task: " + e.getMessage() + RESET);
-                e.printStackTrace();
-            }
-        }, initialDelay, POLL_INTERVAL_SECONDS, TimeUnit.SECONDS);
+        // Use dynamic scheduling: 60s when paper trades active, 300s for signal scanning
+        executor.schedule(() -> pollAndReschedule(), initialDelay, TimeUnit.SECONDS);
 
         keepAliveThread();
+    }
+
+    /**
+     * Runs one poll cycle, then schedules the next with dynamic interval:
+     * - 60s if paper trade mode AND active trades exist (precise SL/target monitoring)
+     * - 300s otherwise (5-min candle-based signal scanning)
+     */
+    private void pollAndReschedule() {
+        try {
+            pollStocks();
+            tradeManagementService.manageTrailingSL(TARGET1_PERCENT, TRAIL_STEP_PERCENT);
+        } catch (Exception e) {
+            System.out.println(RED + "[SCHEDULE] Uncaught exception in scheduled task: " + e.getMessage() + RESET);
+            e.printStackTrace();
+        }
+
+        if (stopped) return;
+
+        boolean hasActiveTrades = !tradeManagementService.getActiveTrades().isEmpty();
+        int nextInterval = (tradeExecutionService.isPaperTrade() && hasActiveTrades)
+                ? POLL_INTERVAL_PAPER : POLL_INTERVAL_LIVE;
+        System.out.println(CYAN + "[SCHEDULE] Next poll in " + nextInterval + "s"
+                + (hasActiveTrades ? " (monitoring active trades)" : " (scanning for signals)") + RESET);
+        executor.schedule(() -> pollAndReschedule(), nextInterval, TimeUnit.SECONDS);
     }
 
 
@@ -341,7 +358,7 @@ public class StrategyEngine {
             }
         });
         t.setDaemon(true);
-        t.setName("StrategyEngine-KeepAlive");
+        t.setName("OrbStrategyEngine-KeepAlive");
         t.start();
     }
 
@@ -352,11 +369,25 @@ public class StrategyEngine {
         }
     }
 
+    /**
+     * Sets a callback to be invoked when this engine stops (for coordinating with other engines).
+     */
+    public void setOnShutdownCallback(Runnable callback) {
+        this.onShutdownCallback = callback;
+    }
+
+    public boolean isStopped() {
+        return stopped;
+    }
+
     private void cleanupAndExit() {
-        System.out.println(RED + "[EXIT] Performing cleanup before exit..." + RESET);
+        System.out.println(YELLOW + "[ORB-EXIT] ORB strategy engine stopping..." + RESET);
         cleanup();
-        System.out.println(RED + "[EXIT] Application exiting." + RESET);
-        applicationContext.close();
+        stopped = true;
+        System.out.println(YELLOW + "[ORB-EXIT] ORB strategy engine stopped." + RESET);
+        if (onShutdownCallback != null) {
+            onShutdownCallback.run();
+        }
     }
 
     @PreDestroy

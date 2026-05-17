@@ -37,6 +37,7 @@ public class Trade {
 
     private String niftyBias;       // POSITIVE or NEGATIVE
     private double niftyChangePercent;
+    private String strategy;        // ORB or VWAP
 
     private LocalDateTime entryTime;
     private LocalDateTime exitTime;
@@ -106,6 +107,9 @@ public class Trade {
 
     public double getNiftyChangePercent() { return niftyChangePercent; }
     public void setNiftyChangePercent(double niftyChangePercent) { this.niftyChangePercent = niftyChangePercent; }
+
+    public String getStrategy() { return strategy; }
+    public void setStrategy(String strategy) { this.strategy = strategy; }
 
     public LocalDateTime getEntryTime() { return entryTime; }
     public void setEntryTime(LocalDateTime entryTime) { this.entryTime = entryTime; }
